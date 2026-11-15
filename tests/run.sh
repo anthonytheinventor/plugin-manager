@@ -284,6 +284,7 @@ grep -qF "start: |Fixture restarting| pill=2 act=1 |APPLY restarts MPC: save you
 grep -qF "asked: act=3 |APPLY restarts MPC: save your project first. Also installs \"Fixture companion\" (keeps it after a reboot). Tap APPLY again.|" /tmp/prestart.out || { cat /tmp/prestart.out; exit 1; }
 grep -qF "companion: marker=1 old=0 pill=3" /tmp/prestart.out || { cat /tmp/prestart.out; exit 1; }
 grep -qF "again: |MPC is restarting to apply the patch" /tmp/prestart.out || { cat /tmp/prestart.out; exit 1; }   # taps during the restart do not launch it again
+grep -qF "foot: |MPC is restarting to apply the patch\xe2\x80\xa6|" /tmp/prestart.out || grep -qF "foot: |MPC is restarting to apply the patch" /tmp/prestart.out || { cat /tmp/prestart.out; exit 1; }   # the PATCHES page shows it in its footer
 grep -qF "launched: |Restarting MPC to apply \"Fixture restarting\"" /tmp/prestart.out && grep -qF "result=1 runner=0 script=0" /tmp/prestart.out || { cat /tmp/prestart.out; exit 1; }
 grep -qF "after restart: |Fixture restarting: applied while MPC restarted. Now: patched.| pill=3 act=2" /tmp/prestart.out || { cat /tmp/prestart.out; exit 1; }
 grep -qF "after undo: |Fixture restarting: removed while MPC restarted. Now: stock.| pill=2 act=1 companion=1" /tmp/prestart.out || { cat /tmp/prestart.out; exit 1; }

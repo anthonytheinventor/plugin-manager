@@ -283,6 +283,7 @@ int main(int argc, char **argv) {
     press("pat1_act"); press("pat1_act");   /* taps while MPC is about to stop: ignored, not a second launch */
     usleep(300000);
     printf("again: |%s|\n", get("status"));
+    printf("foot: |%s|\n", get("pat_foot"));
     void *m2 = e->create(NULL); e->destroy(m); m = m2;   /* MPC restarted: a new instance */
     for (int i = 0; i < 100 && !strstr(get("status"), "restarted"); i++) usleep(100000);
     printf("after restart: |%s| pill=%s act=%s\n", get("status"), get("pat1_pill"), get("pat1_canact"));

@@ -1408,6 +1408,9 @@ static void do_papply(mgr_t *m) {
     int sup = 0;
     snprintf(file, sizeof file, WORK "/patch-%s.sh", p.id);
     snprintf(log, sizeof log, WORK "/patch-%s.log", p.id);
+    /* the script is downloaded and checked first (and a companion installed), which can take seconds on a slow network: say so now,
+     * or the screen looks hung until MPC stops (device, 2026-11-16) */
+    if (p.restarts) say(m, OK, "Preparing \"%s\"\xe2\x80\xa6 MPC restarts in a moment.", p.title);
     const char *why = patch_script(m, &p, file);
     if (why) {
         say(m, ERR, "%s: %s. Nothing was changed.", p.title, why);

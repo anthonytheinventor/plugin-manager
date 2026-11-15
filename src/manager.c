@@ -1408,6 +1408,9 @@ static void do_papply(mgr_t *m) {
     int sup = 0;
     snprintf(file, sizeof file, WORK "/patch-%s.sh", p.id);
     snprintf(log, sizeof log, WORK "/patch-%s.log", p.id);
+    /* the script is downloaded and checked first (and a companion installed), which can take seconds on a slow network: say so now,
+     * or the screen looks hung until MPC stops (device, 2026-11-16) */
+    if (p.restarts) say(m, OK, "Preparing \"%s\"\xe2\x80\xa6 MPC restarts in a moment.", p.title);
     const char *why = patch_script(m, &p, file);
     if (why) {
         say(m, ERR, "%s: %s. Nothing was changed.", p.title, why);
@@ -3654,6 +3657,12 @@ static int mgr_get_param(void *inst, const char *key, char *b, int n) {
         snprintf(b, n, "The web page asks to %s \"%s\": find its card and tap %s once to confirm.%s", (m->ptweb - 1) % 2 ? "UNDO" : "APPLY",
                  m->pt[(m->ptweb - 1) / 2].title, (m->ptweb - 1) % 2 ? "UNDO" : "APPLY",
                  m->pt[(m->ptweb - 1) / 2].restarts ? " MPC restarts: save your project first." : "");
+    else if (!strcmp(key, "pat_foot") && m->sticky) {   /* "Restarting MPC to apply…", the result after the restart: shown here, as this page has no status line */
+        char *e = strstr(m->status, "\xe2\x80\xa6");   /* the footer is one short line: stop at the "…" that starts the second sentence, and keep it under ~76 characters */
+        int len = e ? (int)(e - m->status) + 3 : (int)strlen(m->status);
+        if (len > 76) { len = 76; while (len > 0 && ((unsigned char)m->status[len] & 0xc0) == 0x80) len--; }
+        snprintf(b, n, "%.*s", len, m->status);
+    }
     else if (!strcmp(key, "pat_foot")) snprintf(b, n, m->npt ? "%d device patches. CHECK runs a patch's status on this MPC and changes nothing." : "No patch list yet (needs the network).", m->npt);
     else if (!strcmp(key, "about_ver")) snprintf(b, n, "Plugin Manager %s", PM_VERSION);
     else if (!strcmp(key, "about_inst")) {   /* the manifest of the copy on disk, which can differ from the running build */

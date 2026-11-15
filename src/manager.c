@@ -3446,8 +3446,9 @@ static int mgr_get_param(void *inst, const char *key, char *b, int n) {
         else if (!strcmp(f, "for")) {
             if (!p) snprintf(b, n, " ");
             else if (!pt_arch_ok(m, p)) snprintf(b, n, "Not for this device: built for %s, this MPC is %s", p->arch, m->dev->arch);
-            else if (p->checked) snprintf(b, n, "Checked on this MPC: %s%s%s%s", p->state, p->reason[0] ? "  \xc2\xb7  " : "", p->reason,
-                                          p->restarts && (p->supported || !strcmp(p->state, "patched")) ? "  \xc2\xb7  restarts MPC: use the installer app" : "");
+            else if (p->checked && p->restarts && (p->supported || !strcmp(p->state, "patched")))   /* the hint first: a long reason would push it off the row */
+                snprintf(b, n, "This patch restarts MPC, so no APPLY button here: use the installer app.  \xc2\xb7  %s%s%s", p->state, p->reason[0] ? "  \xc2\xb7  " : "", p->reason);
+            else if (p->checked) snprintf(b, n, "Checked on this MPC: %s%s%s", p->state, p->reason[0] ? "  \xc2\xb7  " : "", p->reason);
             else snprintf(b, n, "For: %.108s", p->os);
         }
         else if (!strcmp(f, "pill"))   /* none, not checked, stock (can apply), applied, not supported, other device, check failed */

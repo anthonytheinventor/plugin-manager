@@ -78,6 +78,10 @@ the project's development**: the catalog, its release rules and the official way
   (a RAM disk) is nearly full, because a full cache makes parts of any skin draw black.
 
 **Extras**
+- **Device patches that restart MPC (1.3.0):** PATCHES offers APPLY / UNDO for patches like the 16-pad drum layout too. The first tap says
+  that MPC restarts (save your project) and what else goes on with it; the second runs the patch outside MPC, and the manager reports the
+  result when MPC is back. On Gen2 the 16-pad patch brings Addin Restore with it, so it stays after a reboot. An older version of a patch
+  can be updated with APPLY.
 - **Always-on background server (1.2.0, opt-in, off by default):** normally the web page is served only while the manager is on a track.
   Turn **Background Server** on in SETTINGS and the same web UI (`http://<mpc address>:8790/`) runs whenever the device is powered on — no
   track, no plugin loaded — so you can browse and install from a phone or laptop any time. It reuses the plugin's own code as a small daemon

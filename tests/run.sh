@@ -274,8 +274,16 @@ sh tests/devices/two-targets.sh
 grep -qF "start: pill=2 act=1" /tmp/papply.out && grep -qF "asked: act=3 pill=2" /tmp/papply.out || { cat /tmp/papply.out; exit 1; }
 grep -qF "applied: pill=3 act=2 |Fixture stock: applied. Now: patched.|" /tmp/papply.out || { cat /tmp/papply.out; exit 1; }
 grep -qF "undone: pill=2 act=1 |Fixture stock: removed. Now: stock.|" /tmp/papply.out || { cat /tmp/papply.out; exit 1; }
-grep -qF "restarting: |Fixture restarting| pill=2 act=0" /tmp/papply.out || { cat /tmp/papply.out; exit 1; }
+grep -qF "restarting: |Fixture restarting| pill=2 act=1" /tmp/papply.out || { cat /tmp/papply.out; exit 1; }
 [ ! -e /tmp/fx-patch-marker ] || { echo "the marker is still there"; exit 1; }
+# a patch that restarts MPC: the first tap warns, the second runs it detached, the next instance reports it; nothing is left behind
+PM_DETACHED_RUN=1 /tmp/drive_addins prestart > /tmp/prestart.out
+grep -qF "start: |Fixture restarting| pill=2 act=1 |APPLY restarts MPC: save your project first." /tmp/prestart.out || { cat /tmp/prestart.out; exit 1; }
+grep -qF "asked: act=3 |APPLY of \"Fixture restarting\" stops MPC and starts it again: save your project first." /tmp/prestart.out || { cat /tmp/prestart.out; exit 1; }
+grep -qF "launched: |Restarting MPC to apply \"Fixture restarting\"" /tmp/prestart.out && grep -qF "result=1 runner=0 script=0" /tmp/prestart.out || { cat /tmp/prestart.out; exit 1; }
+grep -qF "after restart: |Fixture restarting: applied while MPC restarted. Now: patched.| pill=3 act=2" /tmp/prestart.out || { cat /tmp/prestart.out; exit 1; }
+grep -qF "after undo: |Fixture restarting: removed while MPC restarted. Now: stock.| pill=2 act=1" /tmp/prestart.out || { cat /tmp/prestart.out; exit 1; }
+[ ! -e /tmp/fx-patch-marker ] && [ ! -e /tmp/openmpc-pm/patch-result ] || { echo "the marker or the result file is still there"; exit 1; }
 # per-device catalog entries: shown when the model is unknown or listed, hidden on another MPC
 rm -rf /media /sdcard /nvme /synths /data /tmp/openmpc-pm /tmp/pm-mounts; mkdir -p /media
 sh tests/devices/two-targets.sh

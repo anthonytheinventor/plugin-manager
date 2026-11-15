@@ -266,7 +266,30 @@ int main(int argc, char **argv) {
     printf("foot: %s\n", get("pat_foot"));
     e->destroy(m); return 0;
   }
-  if (argc > 1 && !strcmp(argv[1], "papply")) {   /* PATCHES: APPLY and UNDO need two taps; a patch that restarts MPC is not offered */
+  if (argc > 1 && !strcmp(argv[1], "prestart")) {   /* PATCHES: a patch that restarts MPC runs detached (PM_DETACHED_RUN: in the foreground here), and the
+                                                       next instance (MPC restarted) reports the result */
+    press("pat_next");
+    press("pat1_chk");
+    for (int i = 0; i < 60 && strcmp(get("pat1_pill"), "2"); i++) usleep(200000);
+    printf("start: |%s| pill=%s act=%s |%s|\n", get("pat1_title"), get("pat1_pill"), get("pat1_canact"), get("pat1_for"));
+    press("pat1_act");
+    printf("asked: act=%s |%s|\n", get("pat1_canact"), get("status"));
+    press("pat1_act");
+    for (int i = 0; i < 100 && access("/tmp/openmpc-pm/patch-result", F_OK); i++) usleep(100000);
+    for (int i = 0; i < 50 && !access("/tmp/openmpc-pm/patch-run.sh", F_OK); i++) usleep(100000);
+    printf("launched: |%s| result=%d runner=%d script=%d\n", get("status"), !access("/tmp/openmpc-pm/patch-result", F_OK),
+           !access("/tmp/openmpc-pm/patch-run.sh", F_OK), !access("/tmp/openmpc-pm/patch-fx-restart.sh", F_OK));
+    void *m2 = e->create(NULL); e->destroy(m); m = m2;   /* MPC restarted: a new instance */
+    for (int i = 0; i < 100 && !strstr(get("status"), "restarted"); i++) usleep(100000);
+    printf("after restart: |%s| pill=%s act=%s\n", get("status"), get("pat1_pill"), get("pat1_canact"));
+    press("pat1_act"); press("pat1_act");   /* UNDO, the same way */
+    for (int i = 0; i < 100 && access("/tmp/openmpc-pm/patch-result", F_OK); i++) usleep(100000);
+    m2 = e->create(NULL); e->destroy(m); m = m2;
+    for (int i = 0; i < 100 && !strstr(get("status"), "restarted"); i++) usleep(100000);
+    printf("after undo: |%s| pill=%s act=%s\n", get("status"), get("pat1_pill"), get("pat1_canact"));
+    e->destroy(m); return 0;
+  }
+  if (argc > 1 && !strcmp(argv[1], "papply")) {   /* PATCHES: APPLY and UNDO need two taps; a patch that restarts MPC is offered too */
     press("pat1_chk");
     for (int i = 0; i < 60 && strcmp(get("pat1_pill"), "2"); i++) usleep(200000);
     printf("start: pill=%s act=%s\n", get("pat1_pill"), get("pat1_canact"));

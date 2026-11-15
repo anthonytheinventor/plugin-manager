@@ -298,6 +298,14 @@ confirm like the restart prompt, then the manager runs the script **detached fro
 detached restart), because the script stops MPC and the manager lives inside it. Output goes to `manager.log`; after the restart the status
 line reports the result, and UNDO is the same call with `uninstall`. One patch at a time, never part of the plugin queue or UPDATE ALL.
 The script is downloaded and its sha256 checked **before** MPC is stopped; a patch pinned to this repo is also compared with `patch_check.py` rules.
+**Built (2026-11-15, offline only):** a patch with `restarts_mpc` now gets APPLY / UNDO too (before, it had no button, though the pill said CAN APPLY:
+a Discord report on the 16-pad patch). The first tap shows on the status line what the second does ("stops MPC and starts it again: save your
+project first. Changes ..."), and the window for the second tap is 12 s instead of 6. The checked script goes to `<work>/patch-run.sh`, started
+with `systemd-run` like `apply.sh`: `install|uninstall --confirmed` with a clean environment and a 300 s watchdog, then `status`, written to
+`<work>/patch-result`; on the device it also starts `acvs` if the script left MPC stopped. The manager MPC loads next reports it once (claimed by
+rename, like the apply result) and shows its card. Full output: `<work>/patch-<id>.log`. Test: `prestart` in `tests/drive.c` (`ONLY=pick`).
+Not yet run on a device (T6). On Gen2 the 16-pad patch still lasts until the next reboot (its `/run` drop-in); the add-in restore patch
+does not bring that drop-in back.
 
 ### SETTINGS
 Persisted in the manager's work folder next to the theme file; every key has a default, a missing file changes nothing.

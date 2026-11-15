@@ -304,8 +304,14 @@ project first. Changes ..."), and the window for the second tap is 12 s instead 
 with `systemd-run` like `apply.sh`: `install|uninstall --confirmed` with a clean environment and a 300 s watchdog, then `status`, written to
 `<work>/patch-result`; on the device it also starts `acvs` if the script left MPC stopped. The manager MPC loads next reports it once (claimed by
 rename, like the apply result) and shows its card. Full output: `<work>/patch-<id>.log`. Test: `prestart` in `tests/drive.c` (`ONLY=pick`).
-Not yet run on a device (T6). On Gen2 the 16-pad patch still lasts until the next reboot (its `/run` drop-in); the add-in restore patch
-does not bring that drop-in back.
+Not yet run on a device (T6).
+**`also_installs` (2026-11-15, offline only):** a patch can name patches that go on with it on one CPU (catalog key, docs/PATCHES.md in
+mpc-vst-plugins). The first tap names them ("Also installs "MPC Add-Ins patch for 3.10" (keeps it after a reboot)"; titles are cut at
+their first colon, since the status line holds 160 characters). On the second tap, before anything restarts, each is checked and
+installed or updated (`install --confirmed`, they never restart MPC); if one fails, the main patch is not run and the status line says
+why. UNDO leaves them. Used by the 16-pad patch on Gen2: Addin Restore 1.2.0 runs its `reapply` at every MPC start, so the patch survives
+a reboot. `old-patch` (an older version of a patch) now offers APPLY, which updates it in place. The web card says what APPLY also
+installs. Tests: `prestart` (companion updated first), `pcompfail` (it fails: no restart, nothing else changed), `webpatch` (`also`).
 
 ### SETTINGS
 Persisted in the manager's work folder next to the theme file; every key has a default, a missing file changes nothing.

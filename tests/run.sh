@@ -265,6 +265,7 @@ rm -rf /media /sdcard /nvme /synths /data /tmp/openmpc-pm /tmp/pm-mounts /tmp/fx
 sh tests/devices/two-targets.sh
 /tmp/drive_addins webpatch > /tmp/webpatch.out
 grep -qF "asked: act=3 pill=2 |The web page asks to APPLY \"Fixture stock\"" /tmp/webpatch.out && grep -qF "\"pending\":1" /tmp/webpatch.out || { cat /tmp/webpatch.out; exit 1; }
+grep -qF "\"id\":\"fx-restart\"" /tmp/webpatch.out && grep -qF "\"also\":\"Fixture companion: keeps it\"" /tmp/webpatch.out || { cat /tmp/webpatch.out; exit 1; }
 grep -qF "cancelled: act=1" /tmp/webpatch.out && grep -qF "applied: pill=3" /tmp/webpatch.out || { cat /tmp/webpatch.out; exit 1; }
 grep -q "^not possible now" /tmp/webpatch.out && grep -q "^unknown patch" /tmp/webpatch.out && grep -qF "\"locations\":[" /tmp/webpatch.out || { cat /tmp/webpatch.out; exit 1; }
 # PATCHES: APPLY and UNDO (two taps; the script runs install/uninstall --confirmed); a patch that restarts MPC is not offered
@@ -277,12 +278,19 @@ grep -qF "undone: pill=2 act=1 |Fixture stock: removed. Now: stock.|" /tmp/pappl
 grep -qF "restarting: |Fixture restarting| pill=2 act=1" /tmp/papply.out || { cat /tmp/papply.out; exit 1; }
 [ ! -e /tmp/fx-patch-marker ] || { echo "the marker is still there"; exit 1; }
 # a patch that restarts MPC: the first tap warns, the second runs it detached, the next instance reports it; nothing is left behind
+rm -f /tmp/fx-comp-marker /tmp/fx-comp-fail; : > /tmp/fx-comp-old   # the companion starts as an older install: APPLY updates it first
 PM_DETACHED_RUN=1 /tmp/drive_addins prestart > /tmp/prestart.out
 grep -qF "start: |Fixture restarting| pill=2 act=1 |APPLY restarts MPC: save your project first." /tmp/prestart.out || { cat /tmp/prestart.out; exit 1; }
-grep -qF "asked: act=3 |APPLY of \"Fixture restarting\" stops MPC and starts it again: save your project first." /tmp/prestart.out || { cat /tmp/prestart.out; exit 1; }
+grep -qF "asked: act=3 |APPLY restarts MPC: save your project first. Also installs \"Fixture companion\" (keeps it after a reboot). Tap APPLY again.|" /tmp/prestart.out || { cat /tmp/prestart.out; exit 1; }
+grep -qF "companion: marker=1 old=0 pill=3" /tmp/prestart.out || { cat /tmp/prestart.out; exit 1; }
 grep -qF "launched: |Restarting MPC to apply \"Fixture restarting\"" /tmp/prestart.out && grep -qF "result=1 runner=0 script=0" /tmp/prestart.out || { cat /tmp/prestart.out; exit 1; }
 grep -qF "after restart: |Fixture restarting: applied while MPC restarted. Now: patched.| pill=3 act=2" /tmp/prestart.out || { cat /tmp/prestart.out; exit 1; }
-grep -qF "after undo: |Fixture restarting: removed while MPC restarted. Now: stock.| pill=2 act=1" /tmp/prestart.out || { cat /tmp/prestart.out; exit 1; }
+grep -qF "after undo: |Fixture restarting: removed while MPC restarted. Now: stock.| pill=2 act=1 companion=1" /tmp/prestart.out || { cat /tmp/prestart.out; exit 1; }
+# a companion that fails to install: the main patch never runs and MPC is not restarted
+rm -rf /tmp/openmpc-pm/patch-* /tmp/fx-comp-marker /tmp/fx-comp-old; : > /tmp/fx-comp-fail
+PM_DETACHED_RUN=1 /tmp/drive_addins pcompfail > /tmp/pcompfail.out
+grep -qF "failed: |Fixture restarting needs \"Fixture companion: keeps it\", and installing it did not finish" /tmp/pcompfail.out && grep -qF "result=0 runner=0 marker=0" /tmp/pcompfail.out || { cat /tmp/pcompfail.out; exit 1; }
+rm -f /tmp/fx-comp-fail /tmp/fx-comp-marker
 [ ! -e /tmp/fx-patch-marker ] && [ ! -e /tmp/openmpc-pm/patch-result ] || { echo "the marker or the result file is still there"; exit 1; }
 # per-device catalog entries: shown when the model is unknown or listed, hidden on another MPC
 rm -rf /media /sdcard /nvme /synths /data /tmp/openmpc-pm /tmp/pm-mounts; mkdir -p /media

@@ -276,6 +276,7 @@ int main(int argc, char **argv) {
     printf("asked: act=%s |%s|\n", get("pat1_canact"), get("status"));
     press("pat1_act");
     for (int i = 0; i < 100 && access("/tmp/openmpc-pm/patch-result", F_OK); i++) usleep(100000);
+    printf("companion: marker=%d old=%d pill=%s\n", !access("/tmp/fx-comp-marker", F_OK), !access("/tmp/fx-comp-old", F_OK), get("pat2_pill"));
     for (int i = 0; i < 50 && !access("/tmp/openmpc-pm/patch-run.sh", F_OK); i++) usleep(100000);
     printf("launched: |%s| result=%d runner=%d script=%d\n", get("status"), !access("/tmp/openmpc-pm/patch-result", F_OK),
            !access("/tmp/openmpc-pm/patch-run.sh", F_OK), !access("/tmp/openmpc-pm/patch-fx-restart.sh", F_OK));
@@ -286,7 +287,18 @@ int main(int argc, char **argv) {
     for (int i = 0; i < 100 && access("/tmp/openmpc-pm/patch-result", F_OK); i++) usleep(100000);
     m2 = e->create(NULL); e->destroy(m); m = m2;
     for (int i = 0; i < 100 && !strstr(get("status"), "restarted"); i++) usleep(100000);
-    printf("after undo: |%s| pill=%s act=%s\n", get("status"), get("pat1_pill"), get("pat1_canact"));
+    printf("after undo: |%s| pill=%s act=%s companion=%d\n", get("status"), get("pat1_pill"), get("pat1_canact"), !access("/tmp/fx-comp-marker", F_OK));
+    e->destroy(m); return 0;
+  }
+  if (argc > 1 && !strcmp(argv[1], "pcompfail")) {   /* also_installs: a companion that fails to install stops the main patch before MPC stops */
+    press("pat_next");
+    press("pat1_chk");
+    for (int i = 0; i < 60 && strcmp(get("pat1_pill"), "2"); i++) usleep(200000);
+    press("pat1_act"); press("pat1_act");
+    for (int i = 0; i < 100 && !strstr(get("status"), "did not finish"); i++) usleep(100000);
+    usleep(300000);
+    printf("failed: |%s| result=%d runner=%d marker=%d\n", get("status"), !access("/tmp/openmpc-pm/patch-result", F_OK),
+           !access("/tmp/openmpc-pm/patch-run.sh", F_OK), !access("/tmp/fx-patch-marker", F_OK));
     e->destroy(m); return 0;
   }
   if (argc > 1 && !strcmp(argv[1], "papply")) {   /* PATCHES: APPLY and UNDO need two taps; a patch that restarts MPC is offered too */

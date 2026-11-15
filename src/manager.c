@@ -117,6 +117,7 @@ typedef struct device device_t;
 typedef struct {   /* PATCHES: one entry of patches.json (a change to MPC itself, run from a script) and what its `status` said */
     char id[40], title[100], summary[400], author[32], os[200], arch[40], backup[120], modifies[160], url[400], sha[72];
     int restarts, reversible;
+    char also[200];              /* also_installs: "<arch>=<id>, <id>;..." (patches installed first on that CPU; see pt_companions) */
     int checked, supported;      /* `status` was run: state/reason below; supported = the script's supported=1 */
     char state[20], reason[100];
 } patch_t;
@@ -1050,6 +1051,14 @@ static const char *pt_supports(const char *key, const char *v, void *ud) {
     if (!strcmp(key, "arch") && *v == '"') return jstr(v, x->arch, sizeof x->arch);
     return NULL;
 }
+static const char *pt_also(const char *key, const char *v, void *ud) {   /* also_installs: {"aarch64": ["addin-restore"], ...} */
+    patch_t *x = ud;
+    char ids[120];
+    const char *e = pt_arr_join(v, ids, sizeof ids);
+    size_t k = strlen(x->also);
+    if (e && safe(key) && ids[0]) snprintf(x->also + k, sizeof x->also - k, "%s=%s;", key, ids);
+    return e;
+}
 static const char *pt_member(const char *key, const char *v, void *ud) {
     patch_t *x = ud;
     if (!strcmp(key, "id") && *v == '"') return jstr(v, x->id, sizeof x->id);
@@ -1062,6 +1071,7 @@ static const char *pt_member(const char *key, const char *v, void *ud) {
     if (!strcmp(key, "modifies")) return pt_arr_join(v, x->modifies, sizeof x->modifies);
     if (!strcmp(key, "script")) return jobject(v, pt_script, x);
     if (!strcmp(key, "supports")) return jobject(v, pt_supports, x);
+    if (!strcmp(key, "also_installs")) return jobject(v, pt_also, x);
     return NULL;
 }
 typedef struct { patch_t *a; int n; } ptlist_t;
@@ -1117,6 +1127,28 @@ static int pt_arch_ok(const mgr_t *m, const patch_t *p) {
     return !p->arch[0] || strstr(p->arch, a) != NULL;
 }
 
+/* The patches `also_installs` names for this device's CPU (exact arch), as indexes into m->pt: listed, for this CPU, no MPC restart and
+ * reversible (patch_check.py refuses anything else; checked again here). Returns how many, at most 4; -1 when a named one is missing
+ * or not usable, so the main patch is not run without it. */
+static int pt_companions(const mgr_t *m, const patch_t *p, int idx[4]) {
+    char want[64], *e;
+    snprintf(want, sizeof want, "%s=", m->dev->arch);
+    const char *at = p->also;
+    while (at && *at && strncmp(at, want, strlen(want))) { at = strchr(at, ';'); if (at) at++; }
+    if (!at || !*at) return 0;
+    char ids[160];
+    snprintf(ids, sizeof ids, "%s", at + strlen(want));
+    if ((e = strchr(ids, ';'))) *e = 0;
+    int n = 0;
+    for (char *id = strtok_r(ids, ", ", &e); id; id = strtok_r(NULL, ", ", &e)) {
+        int k = 0;
+        while (k < m->npt && strcmp(m->pt[k].id, id)) k++;
+        if (k == m->npt || &m->pt[k] == p || m->pt[k].restarts || !m->pt[k].reversible || !pt_arch_ok(m, &m->pt[k]) || n == 4) return -1;
+        idx[n++] = k;
+    }
+    return n;
+}
+
 static long long mono_ms(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return ts.tv_sec * 1000LL + ts.tv_nsec / 1000000; }
 /* LOCATIONS: REGISTER / cancel for row ri, from the screen or the web page (mu held). 1 when the row can take it. */
 static int loc_reg_toggle(mgr_t *m, int ri) {
@@ -1136,7 +1168,7 @@ static int loc_reg_toggle(mgr_t *m, int ri) {
  * restarts MPC is offered too: it runs detached from MPC (do_papply), because the script stops MPC and the manager lives inside it. */
 static int pt_act_kind(const mgr_t *m, const patch_t *p) {
     if (!p || !pt_arch_ok(m, p) || !p->checked) return 0;
-    if (p->supported && !strcmp(p->state, "stock")) return 1;
+    if (p->supported && (!strcmp(p->state, "stock") || !strcmp(p->state, "old-patch"))) return 1;   /* old-patch: APPLY updates it in place */
     if (!strcmp(p->state, "patched") && p->reversible) return 2;
     return 0;
 }
@@ -1313,6 +1345,50 @@ static void show_patch_result(mgr_t *m) {   /* called with m->mu held, after pat
     m->rev++;
 }
 
+/* Before APPLY of a patch with also_installs on this CPU: check each named patch and install or update it (`install --confirmed`, while
+ * MPC still runs: they never restart it), so the main patch never goes on without it. 0 when all are in place; else the status line
+ * says why and the main patch is not run. Their cards show the new state. */
+static int companions_first(mgr_t *m, const patch_t *p) {
+    int idx[4];
+    pthread_mutex_lock(&m->mu);
+    int n = pt_companions(m, p, idx);
+    patch_t c[4];
+    for (int i = 0; i < n; i++) c[i] = m->pt[idx[i]];
+    pthread_mutex_unlock(&m->mu);
+    if (n < 0) { say(m, ERR, "%s: a patch it needs on this MPC is missing from the list. Nothing was changed.", p->title); return -1; }
+    for (int i = 0; i < n; i++) {
+        char file[300], log[300], state[24] = "error", reason[100] = "";
+        int sup = 0;
+        snprintf(file, sizeof file, WORK "/patch-%s.sh", c[i].id);
+        snprintf(log, sizeof log, WORK "/patch-%s.log", c[i].id);
+        const char *why = patch_script(m, &c[i], file);
+        if (why) { say(m, ERR, "%s needs \"%s\": %s. Nothing was changed.", p->title, c[i].title, why); return -1; }
+        patch_status(m, &c[i], file, state, sizeof state, &sup, reason, sizeof reason);
+        if (strcmp(state, "patched")) {
+            if (!sup || (strcmp(state, "stock") && strcmp(state, "old-patch"))) {
+                unlink(file); patch_store(m, c[i].id, state, sup, reason);
+                say(m, ERR, "%s needs \"%s\", which this MPC cannot take (%s). Nothing was changed.", p->title, c[i].title, reason[0] ? reason : state);
+                return -1;
+            }
+            say(m, OK, "Installing \"%s\" first (%s needs it)\xe2\x80\xa6", c[i].title, p->title);
+            int rc = patch_run(file, "install", "--confirmed", 180, WORK "/patch-out.txt");
+            char *out = slurp(WORK "/patch-out.txt", 16384);
+            if (out) { FILE *lf = fopen(log, "w"); if (lf) { fputs(out, lf); fclose(lf); } free(out); }
+            unlink(WORK "/patch-out.txt");
+            patch_status(m, &c[i], file, state, sizeof state, &sup, reason, sizeof reason);
+            logf_("patch %s (for %s) install: exit %d, now %s", c[i].id, p->id, rc, state);
+        }
+        unlink(file);
+        patch_store(m, c[i].id, state, sup, reason);
+        if (strcmp(state, "patched")) {
+            say(m, ERR, "%s needs \"%s\", and installing it did not finish (now %s; log " WORK "/patch-%s.log). %s was not applied.", p->title,
+                c[i].title, state, c[i].id, p->title);
+            return -1;
+        }
+    }
+    return 0;
+}
+
 /* APPLY / UNDO: the script's own `install --confirmed` / `uninstall --confirmed` (it keeps its own backup and puts things back if it fails),
  * then `status` again. The screen asked twice first. The output is kept in <work>/patch-<id>.log. A patch that restarts MPC runs detached
  * (papply_detached); the checksum is checked before anything stops. */
@@ -1331,6 +1407,7 @@ static void do_papply(mgr_t *m) {
         say(m, ERR, "%s: %s. Nothing was changed.", p.title, why);
         return;
     }
+    if (!undo && companions_first(m, &p)) { unlink(file); return; }
     if (p.restarts) { papply_detached(m, &p, undo, file, log); return; }
     say(m, OK, "%s \"%s\"\xe2\x80\xa6", undo ? "Removing" : "Applying", p.title);
     int rc = patch_run(file, undo ? "uninstall" : "install", "--confirmed", 180, WORK "/patch-out.txt");
@@ -3420,10 +3497,18 @@ static void mgr_set_param(void *inst, const char *key, const char *val) {
             } else {   /* the first tap: the button asks again, and the status line says what the second one does */
                 m->ptconf = want; m->ptconf_t = now;
                 const patch_t *p = &m->pt[pi];
-                if (p->restarts) say_locked(m, WARN, "%s \"%.60s\" stops MPC and starts it again: save your project first. Changes %.60s. Tap %s again to go.",
-                                            kind == 2 ? "UNDO of" : "APPLY of", p->title, p->modifies[0] ? p->modifies : "?", kind == 2 ? "UNDO" : "APPLY");
-                else say_locked(m, WARN, "%s \"%.60s\" changes %.80s%s. Tap %s again to go.", kind == 2 ? "UNDO of" : "APPLY of", p->title,
-                                p->modifies[0] ? p->modifies : "?", p->reversible ? "" : " and cannot be undone", kind == 2 ? "UNDO" : "APPLY");
+                char also[110] = "";   /* the status line holds 160 characters: titles are cut at their first colon */
+                int ci[4], nc = kind == 1 ? pt_companions(m, p, ci) : 0;
+                for (int i = 0; i < nc; i++) {
+                    size_t k = strlen(also);
+                    const char *t = m->pt[ci[i]].title;
+                    snprintf(also + k, sizeof also - k, "%s\"%.*s\"", i ? ", " : " Also installs ", (int)(strcspn(t, ":") < 40 ? strcspn(t, ":") : 40), t);
+                }
+                if (nc > 0) strncat(also, " (keeps it after a reboot).", sizeof also - strlen(also) - 1);
+                const char *w = kind == 2 ? "UNDO" : "APPLY";
+                if (p->restarts) say_locked(m, WARN, "%s restarts MPC: save your project first.%s Tap %s again.", w, also, w);
+                else say_locked(m, WARN, "%s of \"%.40s\" changes %.50s%s.%s Tap %s again.", w, p->title, p->modifies[0] ? p->modifies : "?",
+                                p->reversible ? "" : " and cannot be undone", also, w);
             }
         }
     } else if (!strcmp(key, "pat_prev") && m->ptpage > 0) { m->ptpage--; m->ptconf = 0; }
@@ -3548,7 +3633,7 @@ static int mgr_get_param(void *inst, const char *key, char *b, int n) {
         }
         else if (!strcmp(f, "pill"))   /* none, not checked, stock (can apply), applied, not supported, other device, check failed */
             snprintf(b, n, "%d", !p ? 0 : !pt_arch_ok(m, p) ? 5 : !p->checked ? 1 : !strcmp(p->state, "error") ? 6
-                                  : p->supported && !strcmp(p->state, "stock") ? 2 : !strcmp(p->state, "patched") ? 3 : 4);
+                                  : p->supported && (!strcmp(p->state, "stock") || !strcmp(p->state, "old-patch")) ? 2 : !strcmp(p->state, "patched") ? 3 : 4);
         else if (!strcmp(f, "canact")) {   /* off, apply, undo, confirm apply, confirm undo */
             int kind = pt_act_kind(m, p);
             int want = 1 + pi * 2 + (kind == 2);

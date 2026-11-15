@@ -100,6 +100,13 @@ stock = ("#!/bin/sh\nM=/tmp/fx-patch-marker\n"
          "uninstall) [ \"$2\" = --confirmed ] || exit 3; echo removing; rm -f $M ;;\n*) exit 2 ;; esac\n")
 open(os.path.join(out, "patch-stock.sh"), "w").write(stock)
 open(os.path.join(out, "patch-evil.sh"), "w").write("#!/bin/sh\necho changed > /tmp/patch-evil-ran\n")
+# a companion (also_installs of fx-restart): /tmp/fx-comp-old makes it an older install, /tmp/fx-comp-fail makes its install fail
+comp = ("#!/bin/sh\nM=/tmp/fx-comp-marker\n"
+        "case \"$1\" in status) if [ -e $M ]; then echo \"STATE state=patched supported=1\"; elif [ -e /tmp/fx-comp-old ]; then "
+        "echo \"STATE state=old-patch supported=1\"; else echo \"STATE state=stock supported=1\"; fi ;;\n"
+        "install) [ \"$2\" = --confirmed ] || exit 3; if [ -e /tmp/fx-comp-fail ]; then echo \"could not install\"; exit 1; fi; rm -f /tmp/fx-comp-old; : > $M ;;\n"
+        "uninstall) [ \"$2\" = --confirmed ] || exit 3; rm -f $M ;;\n*) exit 2 ;; esac\n")
+open(os.path.join(out, "patch-comp.sh"), "w").write(comp)
 def pat(i, title, script, sha, arch, restarts=False):
     return {"id": i, "title": title, "summary": "A fixture patch that changes nothing. " * 6, "author": "tests", "license": "MIT", "docs": "x",
             "script": {"url": base + script, "sha256": sha},
@@ -110,6 +117,8 @@ json.dump({"schema": 1, "patches": [
     pat("fx-stock", "Fixture stock", "patch-stock.sh", sh_, "armv7l,aarch64,x86_64"),
     pat("fx-evil", "Fixture bad checksum", "patch-evil.sh", "0" * 64, "armv7l,aarch64,x86_64"),
     pat("fx-arm", "Fixture other CPU", "patch-stock.sh", sh_, "mips"),
-    pat("fx-restart", "Fixture restarting", "patch-stock.sh", sh_, "armv7l,aarch64,x86_64", True)]},
+    dict(pat("fx-restart", "Fixture restarting", "patch-stock.sh", sh_, "armv7l,aarch64,x86_64", True),
+         also_installs={"x86_64": ["fx-comp"], "aarch64": ["fx-comp"], "armv7l": ["fx-comp"]}),
+    pat("fx-comp", "Fixture companion: keeps it", "patch-comp.sh", hashlib.sha256(comp.encode()).hexdigest(), "armv7l,aarch64,x86_64")]},
     open(os.path.join(out, "patches.json"), "w"), indent=1)
 print("fixture: %d packages in %s" % (len(plugins), out))

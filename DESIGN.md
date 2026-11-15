@@ -304,7 +304,7 @@ project first. Changes ..."), and the window for the second tap is 12 s instead 
 with `systemd-run` like `apply.sh`: `install|uninstall --confirmed` with a clean environment and a 300 s watchdog, then `status`, written to
 `<work>/patch-result`; on the device it also starts `acvs` if the script left MPC stopped. The manager MPC loads next reports it once (claimed by
 rename, like the apply result) and shows its card. Full output: `<work>/patch-<id>.log`. Test: `prestart` in `tests/drive.c` (`ONLY=pick`).
-T6 on a device, 2026-11-15 (Live III, MPC OS 3.10.1, manager 1.3.0): APPLY of the 16-pad patch (detached restart, result shown after), reboot with Addin Restore 1.2.0 (one automatic restart, patch active) and UNDO by SSH passed; three bugs found and fixed (see HANDOFF 0c). The on-screen UNDO is still to be repeated with the fixed script.
+T6 on a device, 2026-11-15 (Live III, MPC OS 3.10.1, manager 1.3.0): APPLY of the 16-pad patch (detached restart, result shown after), reboot with Addin Restore 1.2.0 (one automatic restart, patch active) and UNDO by SSH passed; three bugs found and fixed (see HANDOFF 0c). The on-screen UNDO was repeated with the fixed script on 2026-11-16 (device) and passed, as did APPLY with the Addin Restore companion.
 **`also_installs` (2026-11-15, offline only):** a patch can name patches that go on with it on one CPU (catalog key, docs/PATCHES.md in
 mpc-vst-plugins). The first tap names them ("Also installs "MPC Add-Ins patch for 3.10" (keeps it after a reboot)"; titles are cut at
 their first colon, since the status line holds 160 characters). On the second tap, before anything restarts, each is checked and

@@ -1287,6 +1287,7 @@ static int launch_detached(mgr_t *m, const char *script);
  * The runner runs `install|uninstall --confirmed` with a clean environment and a watchdog, then `status`, writes <work>/patch-result
  * ("id|verb|exit", the script's lines after that) and, on the device, starts MPC again if the script left it stopped. The manager that
  * MPC loads next reports it (show_patch_result). The full output stays in <work>/patch-<id>.log. */
+static time_t g_detached_at;   /* when a restarting patch was launched: MPC is about to stop, so further APPLY/UNDO taps are ignored (they launched it again) */
 static void papply_detached(mgr_t *m, const patch_t *p, int undo, const char *file, const char *log) {
     const char *verb = undo ? "uninstall" : "install";
     FILE *f = fopen(WORK "/patch-run.sh", "w");
@@ -1310,7 +1311,7 @@ static void papply_detached(mgr_t *m, const patch_t *p, int undo, const char *fi
     if (launch_detached(m, WORK "/patch-run.sh")) {
         unlink(file); unlink(WORK "/patch-run.sh");
         say(m, ERR, "%s: MPC could not be restarted. Nothing was changed.", p->title);
-    }
+    } else g_detached_at = time(NULL);
 }
 
 /* The result of a restarting patch, written by patch-run.sh while MPC was stopped: reported once, by the manager loaded after it. */
@@ -1318,6 +1319,7 @@ static void show_patch_result(mgr_t *m) {   /* called with m->mu held, after pat
     char mine[96];
     snprintf(mine, sizeof mine, WORK "/patch-result.%ld.%p", (long)getpid(), (void *)m);
     if (rename(WORK "/patch-result", mine)) return;   /* claimed by one instance (MPC opens the plugin more than once) */
+    g_detached_at = 0;   /* MPC came back: the next APPLY is a new one */
     char *s = slurp(mine, 8192);
     unlink(mine);
     if (!s) return;
@@ -1393,6 +1395,10 @@ static int companions_first(mgr_t *m, const patch_t *p) {
  * then `status` again. The screen asked twice first. The output is kept in <work>/patch-<id>.log. A patch that restarts MPC runs detached
  * (papply_detached); the checksum is checked before anything stops. */
 static void do_papply(mgr_t *m) {
+    if (g_detached_at && time(NULL) - g_detached_at < 300) {   /* a restarting patch is already running: do not launch it again */
+        say(m, WARN, "MPC is restarting to apply the patch\xe2\x80\xa6 please wait, do not press APPLY again.");
+        return;
+    }
     pthread_mutex_lock(&m->mu);
     int k = m->ptidx, undo = m->ptact == 2;
     patch_t p = k >= 0 && k < m->npt ? m->pt[k] : (patch_t){0};

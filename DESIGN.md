@@ -298,6 +298,20 @@ confirm like the restart prompt, then the manager runs the script **detached fro
 detached restart), because the script stops MPC and the manager lives inside it. Output goes to `manager.log`; after the restart the status
 line reports the result, and UNDO is the same call with `uninstall`. One patch at a time, never part of the plugin queue or UPDATE ALL.
 The script is downloaded and its sha256 checked **before** MPC is stopped; a patch pinned to this repo is also compared with `patch_check.py` rules.
+**Built (2026-11-15, offline only):** a patch with `restarts_mpc` now gets APPLY / UNDO too (before, it had no button, though the pill said CAN APPLY:
+a Discord report on the 16-pad patch). The first tap shows on the status line what the second does ("stops MPC and starts it again: save your
+project first. Changes ..."), and the window for the second tap is 12 s instead of 6. The checked script goes to `<work>/patch-run.sh`, started
+with `systemd-run` like `apply.sh`: `install|uninstall --confirmed` with a clean environment and a 300 s watchdog, then `status`, written to
+`<work>/patch-result`; on the device it also starts `acvs` if the script left MPC stopped. The manager MPC loads next reports it once (claimed by
+rename, like the apply result) and shows its card. Full output: `<work>/patch-<id>.log`. Test: `prestart` in `tests/drive.c` (`ONLY=pick`).
+Not yet run on a device (T6).
+**`also_installs` (2026-11-15, offline only):** a patch can name patches that go on with it on one CPU (catalog key, docs/PATCHES.md in
+mpc-vst-plugins). The first tap names them ("Also installs "MPC Add-Ins patch for 3.10" (keeps it after a reboot)"; titles are cut at
+their first colon, since the status line holds 160 characters). On the second tap, before anything restarts, each is checked and
+installed or updated (`install --confirmed`, they never restart MPC); if one fails, the main patch is not run and the status line says
+why. UNDO leaves them. Used by the 16-pad patch on Gen2: Addin Restore 1.2.0 runs its `reapply` at every MPC start, so the patch survives
+a reboot. `old-patch` (an older version of a patch) now offers APPLY, which updates it in place. The web card says what APPLY also
+installs. Tests: `prestart` (companion updated first), `pcompfail` (it fails: no restart, nothing else changed), `webpatch` (`also`).
 
 ### SETTINGS
 Persisted in the manager's work folder next to the theme file; every key has a default, a missing file changes nothing.

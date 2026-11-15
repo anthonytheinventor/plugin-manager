@@ -114,6 +114,9 @@ static void web_state(mgr_t *m, wbuf_t *w) {
         wput(w, "%s{\"id\":\"", i ? "," : "");
         wesc(w, p->id, 0); wput(w, "\",\"title\":\""); wesc(w, p->title, 0); wput(w, "\",\"summary\":\""); wesc(w, p->summary, 0);
         wput(w, "\",\"state\":\""); wesc(w, p->checked ? p->state : "unchecked", 0); wput(w, "\",\"reason\":\""); wesc(w, p->reason, 0);
+        wput(w, "\",\"also\":\"");   /* titles of the patches APPLY installs first on this MPC (also_installs) */
+        int ci[4], nc = pt_companions(m, p, ci);
+        for (int c = 0; c < nc; c++) { if (c) wput(w, ", "); wesc(w, m->pt[ci[c]].title, 0); }
         int kind = pt_act_kind(m, p), want = 1 + i * 2 + (kind == 2);
         wput(w, "\",\"archok\":%d,\"restarts\":%d,\"offer\":%d,\"pending\":%d}", pt_arch_ok(m, p), p->restarts, kind, kind && m->ptweb == want);
     }

@@ -210,7 +210,8 @@ function patHtml() {
     p.archok ? `<button onclick="api('/api/patch?id=${encodeURIComponent(p.id)}&do=check')">${p.state == 'unchecked' ? 'Check' : 'Check again'}</button>` : ''}${
     p.pending ? `<span class="tag x">Waiting for a tap on the MPC screen</span><button class="q" onclick="api('/api/patch?id=${encodeURIComponent(p.id)}&do=cancel')">Cancel</button>`
     : p.offer ? `<button class="p" onclick="api('/api/patch?id=${encodeURIComponent(p.id)}&do=${p.offer == 2 ? 'undo' : 'apply'}')">${p.offer == 2 ? 'Ask to undo' : 'Ask to apply'}</button>` : ''}${
-    p.restarts ? '<span class="d">Restarts MPC: run it from the desktop installer.</span>' : ''}</div></div>`).join('') || '<p class="d">No patch list yet (needs the network).</p>'
+    p.restarts ? '<span class="d">Restarts MPC: save your project first. This page reconnects when MPC is back.</span>' : ''}${
+    p.also ? `<span class="d">Apply also installs ${esc(p.also)}, so it stays after a reboot.</span>` : ''}</div></div>`).join('') || '<p class="d">No patch list yet (needs the network).</p>'
     + '<p class="d">Apply and Undo are confirmed with a tap on the MPC screen (PATCHES page), so nothing on the network can change the MPC by itself.</p>';
 }
 

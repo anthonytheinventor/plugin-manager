@@ -74,7 +74,7 @@ typedef struct {
 #endif
 /* The version of this build, shown on the ABOUT page. The release workflow fails when its version input differs from this. */
 #ifndef PM_VERSION
-#define PM_VERSION "1.2.1"
+#define PM_VERSION "1.3.0"
 #endif
 #define WORK "/tmp/openmpc-pm"
 #define MAXPKG 256
@@ -117,6 +117,7 @@ typedef struct device device_t;
 typedef struct {   /* PATCHES: one entry of patches.json (a change to MPC itself, run from a script) and what its `status` said */
     char id[40], title[100], summary[400], author[32], os[200], arch[40], backup[120], modifies[160], url[400], sha[72];
     int restarts, reversible;
+    char also[200];              /* also_installs: "<arch>=<id>, <id>;..." (patches installed first on that CPU; see pt_companions) */
     int checked, supported;      /* `status` was run: state/reason below; supported = the script's supported=1 */
     char state[20], reason[100];
 } patch_t;
@@ -1050,6 +1051,14 @@ static const char *pt_supports(const char *key, const char *v, void *ud) {
     if (!strcmp(key, "arch") && *v == '"') return jstr(v, x->arch, sizeof x->arch);
     return NULL;
 }
+static const char *pt_also(const char *key, const char *v, void *ud) {   /* also_installs: {"aarch64": ["addin-restore"], ...} */
+    patch_t *x = ud;
+    char ids[120];
+    const char *e = pt_arr_join(v, ids, sizeof ids);
+    size_t k = strlen(x->also);
+    if (e && safe(key) && ids[0]) snprintf(x->also + k, sizeof x->also - k, "%s=%s;", key, ids);
+    return e;
+}
 static const char *pt_member(const char *key, const char *v, void *ud) {
     patch_t *x = ud;
     if (!strcmp(key, "id") && *v == '"') return jstr(v, x->id, sizeof x->id);
@@ -1062,6 +1071,7 @@ static const char *pt_member(const char *key, const char *v, void *ud) {
     if (!strcmp(key, "modifies")) return pt_arr_join(v, x->modifies, sizeof x->modifies);
     if (!strcmp(key, "script")) return jobject(v, pt_script, x);
     if (!strcmp(key, "supports")) return jobject(v, pt_supports, x);
+    if (!strcmp(key, "also_installs")) return jobject(v, pt_also, x);
     return NULL;
 }
 typedef struct { patch_t *a; int n; } ptlist_t;
@@ -1117,6 +1127,28 @@ static int pt_arch_ok(const mgr_t *m, const patch_t *p) {
     return !p->arch[0] || strstr(p->arch, a) != NULL;
 }
 
+/* The patches `also_installs` names for this device's CPU (exact arch), as indexes into m->pt: listed, for this CPU, no MPC restart and
+ * reversible (patch_check.py refuses anything else; checked again here). Returns how many, at most 4; -1 when a named one is missing
+ * or not usable, so the main patch is not run without it. */
+static int pt_companions(const mgr_t *m, const patch_t *p, int idx[4]) {
+    char want[64], *e;
+    snprintf(want, sizeof want, "%s=", m->dev->arch);
+    const char *at = p->also;
+    while (at && *at && strncmp(at, want, strlen(want))) { at = strchr(at, ';'); if (at) at++; }
+    if (!at || !*at) return 0;
+    char ids[160];
+    snprintf(ids, sizeof ids, "%s", at + strlen(want));
+    if ((e = strchr(ids, ';'))) *e = 0;
+    int n = 0;
+    for (char *id = strtok_r(ids, ", ", &e); id; id = strtok_r(NULL, ", ", &e)) {
+        int k = 0;
+        while (k < m->npt && strcmp(m->pt[k].id, id)) k++;
+        if (k == m->npt || &m->pt[k] == p || m->pt[k].restarts || !m->pt[k].reversible || !pt_arch_ok(m, &m->pt[k]) || n == 4) return -1;
+        idx[n++] = k;
+    }
+    return n;
+}
+
 static long long mono_ms(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return ts.tv_sec * 1000LL + ts.tv_nsec / 1000000; }
 /* LOCATIONS: REGISTER / cancel for row ri, from the screen or the web page (mu held). 1 when the row can take it. */
 static int loc_reg_toggle(mgr_t *m, int ri) {
@@ -1133,13 +1165,15 @@ static int loc_reg_toggle(mgr_t *m, int ri) {
 }
 
 /* what the page offers for a checked patch: 1 APPLY (the script says stock and supported), 2 UNDO (it says patched), 0 nothing. A patch that
- * restarts MPC is not run from this screen: the script stops MPC, and the manager lives inside it. */
+ * restarts MPC is offered too: it runs detached from MPC (do_papply), because the script stops MPC and the manager lives inside it. */
 static int pt_act_kind(const mgr_t *m, const patch_t *p) {
-    if (!p || !pt_arch_ok(m, p) || !p->checked || p->restarts) return 0;
-    if (p->supported && !strcmp(p->state, "stock")) return 1;
+    if (!p || !pt_arch_ok(m, p) || !p->checked) return 0;
+    if (p->supported && (!strcmp(p->state, "stock") || !strcmp(p->state, "old-patch"))) return 1;   /* old-patch: APPLY updates it in place */
     if (!strcmp(p->state, "patched") && p->reversible) return 2;
     return 0;
 }
+
+static long long pt_tapwin(const patch_t *p) { return p && p->restarts ? 12000 : 6000; }   /* ms for the second APPLY / UNDO tap */
 
 /* A patch's script: fetched, written to `file` and compared with the sha256 in patches.json. 0 when it is there and matches; else why not. */
 static const char *patch_script(mgr_t *m, const patch_t *p, const char *file) {
@@ -1246,14 +1280,124 @@ static void do_patch(mgr_t *m) {
     pthread_mutex_unlock(&m->mu);
 }
 
-/* APPLY / UNDO a patch that does not restart MPC: the script's own `install --confirmed` / `uninstall --confirmed` (it keeps its own backup and
- * puts things back if it fails), then `status` again. The screen asked twice first. The output is kept in <work>/patch-<id>.log. */
+static int launch_detached(mgr_t *m, const char *script);
+
+/* A patch that restarts MPC: the script stops MPC, and the manager lives inside it, so it cannot wait for the result. The checked script
+ * (patch_script ran first, while MPC still runs) goes to a small runner, <work>/patch-run.sh, started outside MPC the way apply.sh is.
+ * The runner runs `install|uninstall --confirmed` with a clean environment and a watchdog, then `status`, writes <work>/patch-result
+ * ("id|verb|exit", the script's lines after that) and, on the device, starts MPC again if the script left it stopped. The manager that
+ * MPC loads next reports it (show_patch_result). The full output stays in <work>/patch-<id>.log. */
+static void papply_detached(mgr_t *m, const patch_t *p, int undo, const char *file, const char *log) {
+    const char *verb = undo ? "uninstall" : "install";
+    FILE *f = fopen(WORK "/patch-run.sh", "w");
+    if (!f) { unlink(file); say(m, ERR, "%s: the runner could not be written. Nothing was changed.", p->title); return; }
+    fprintf(f, "#!/bin/sh\n# Written by the Plugin Manager: runs a patch that restarts MPC, outside MPC. Not for running by hand.\n"
+               "S='%s'; L='%s'; R='" WORK "/patch-result'; E='env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root'\n"
+               "$E sh \"$S\" %s --confirmed >\"$L\" 2>&1 </dev/null & p=$!\n"
+               "( sleep 300; kill $p ) >/dev/null 2>&1 & w=$!\n"
+               "wait $p; rc=$?; kill $w 2>/dev/null\n"
+               "{ echo '%s|%s|'$rc; tail -n 4 \"$L\"; $E sh \"$S\" status </dev/null 2>&1 | grep 'STATE state=' | tail -n 1; } >\"$R.new\" && mv \"$R.new\" \"$R\"\n"
+               "rm -f \"$S\"\n", file, log, verb, p->id, verb);
+#if defined(__arm__) || defined(__aarch64__)
+    /* the scripts start MPC again themselves, also when they fail; this only covers one that was killed or died in between */
+    fprintf(f, "sleep 3; command -v systemctl >/dev/null && ! systemctl is-active -q acvs && systemctl start acvs\n");
+#endif
+    fprintf(f, "rm -f \"$0\"\n");
+    fclose(f);
+    unlink(WORK "/patch-result");
+    logf_("patch %s %s: launching detached (restarts MPC)", p->id, verb);
+    say(m, OK, "Restarting MPC to %s \"%s\"\xe2\x80\xa6 open the Plugin Manager again when MPC is back to see the result.", undo ? "undo" : "apply", p->title);
+    if (launch_detached(m, WORK "/patch-run.sh")) {
+        unlink(file); unlink(WORK "/patch-run.sh");
+        say(m, ERR, "%s: MPC could not be restarted. Nothing was changed.", p->title);
+    }
+}
+
+/* The result of a restarting patch, written by patch-run.sh while MPC was stopped: reported once, by the manager loaded after it. */
+static void show_patch_result(mgr_t *m) {   /* called with m->mu held, after patches_load */
+    char mine[96];
+    snprintf(mine, sizeof mine, WORK "/patch-result.%ld.%p", (long)getpid(), (void *)m);
+    if (rename(WORK "/patch-result", mine)) return;   /* claimed by one instance (MPC opens the plugin more than once) */
+    char *s = slurp(mine, 8192);
+    unlink(mine);
+    if (!s) return;
+    char id[64] = "", verb[16] = "", state[24] = "error", reason[100] = "", last[160] = "";
+    int rc = -1, sup = 0;
+    sscanf(s, "%63[^|]|%15[^|]|%d", id, verb, &rc);
+    patch_state_from(s, state, sizeof state, &sup, reason, sizeof reason);
+    for (char *l = strchr(s, '\n'); l && l[1]; l = strchr(l + 1, '\n'))   /* the last output line before the STATE line */
+        if (strncmp(l + 1, "STATE state=", 12)) snprintf(last, sizeof last, "%.*s", (int)strcspn(l + 1, "\r\n"), l + 1);
+    free(s);
+    int undo = !strcmp(verb, "uninstall"), k = 0;
+    while (k < m->npt && strcmp(m->pt[k].id, id)) k++;
+    const char *title = k < m->npt ? m->pt[k].title : id;
+    if (k < m->npt) {
+        m->pt[k].checked = 1; m->pt[k].supported = sup;
+        snprintf(m->pt[k].state, sizeof m->pt[k].state, "%s", state);
+        snprintf(m->pt[k].reason, sizeof m->pt[k].reason, "%s", reason);
+        m->ptpage = k / 3;
+    }
+    logf_("patch %s %s (detached): exit %d, now %s", id, verb, rc, state);
+    int good = rc == 0 && (undo ? strcmp(state, "patched") : !strcmp(state, "patched"));
+    if (good) say_locked(m, OK, "%s: %s while MPC restarted. Now: %s.", title, undo ? "removed" : "applied", state);
+    else say_locked(m, ERR, "%s: %s did not finish (exit %d, now %s). %s (log: " WORK "/patch-%s.log)", title, undo ? "removing" : "applying",
+                    rc, state, last, id);
+    m->rev++;
+}
+
+/* Before APPLY of a patch with also_installs on this CPU: check each named patch and install or update it (`install --confirmed`, while
+ * MPC still runs: they never restart it), so the main patch never goes on without it. 0 when all are in place; else the status line
+ * says why and the main patch is not run. Their cards show the new state. */
+static int companions_first(mgr_t *m, const patch_t *p) {
+    int idx[4];
+    pthread_mutex_lock(&m->mu);
+    int n = pt_companions(m, p, idx);
+    patch_t c[4];
+    for (int i = 0; i < n; i++) c[i] = m->pt[idx[i]];
+    pthread_mutex_unlock(&m->mu);
+    if (n < 0) { say(m, ERR, "%s: a patch it needs on this MPC is missing from the list. Nothing was changed.", p->title); return -1; }
+    for (int i = 0; i < n; i++) {
+        char file[300], log[300], state[24] = "error", reason[100] = "";
+        int sup = 0;
+        snprintf(file, sizeof file, WORK "/patch-%s.sh", c[i].id);
+        snprintf(log, sizeof log, WORK "/patch-%s.log", c[i].id);
+        const char *why = patch_script(m, &c[i], file);
+        if (why) { say(m, ERR, "%s needs \"%s\": %s. Nothing was changed.", p->title, c[i].title, why); return -1; }
+        patch_status(m, &c[i], file, state, sizeof state, &sup, reason, sizeof reason);
+        if (strcmp(state, "patched")) {
+            if (!sup || (strcmp(state, "stock") && strcmp(state, "old-patch"))) {
+                unlink(file); patch_store(m, c[i].id, state, sup, reason);
+                say(m, ERR, "%s needs \"%s\", which this MPC cannot take (%s). Nothing was changed.", p->title, c[i].title, reason[0] ? reason : state);
+                return -1;
+            }
+            say(m, OK, "Installing \"%s\" first (%s needs it)\xe2\x80\xa6", c[i].title, p->title);
+            int rc = patch_run(file, "install", "--confirmed", 180, WORK "/patch-out.txt");
+            char *out = slurp(WORK "/patch-out.txt", 16384);
+            if (out) { FILE *lf = fopen(log, "w"); if (lf) { fputs(out, lf); fclose(lf); } free(out); }
+            unlink(WORK "/patch-out.txt");
+            patch_status(m, &c[i], file, state, sizeof state, &sup, reason, sizeof reason);
+            logf_("patch %s (for %s) install: exit %d, now %s", c[i].id, p->id, rc, state);
+        }
+        unlink(file);
+        patch_store(m, c[i].id, state, sup, reason);
+        if (strcmp(state, "patched")) {
+            say(m, ERR, "%s needs \"%s\", and installing it did not finish (now %s; log " WORK "/patch-%s.log). %s was not applied.", p->title,
+                c[i].title, state, c[i].id, p->title);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/* APPLY / UNDO: the script's own `install --confirmed` / `uninstall --confirmed` (it keeps its own backup and puts things back if it fails),
+ * then `status` again. The screen asked twice first. The output is kept in <work>/patch-<id>.log. A patch that restarts MPC runs detached
+ * (papply_detached); the checksum is checked before anything stops. */
 static void do_papply(mgr_t *m) {
     pthread_mutex_lock(&m->mu);
     int k = m->ptidx, undo = m->ptact == 2;
     patch_t p = k >= 0 && k < m->npt ? m->pt[k] : (patch_t){0};
     pthread_mutex_unlock(&m->mu);
-    if (!p.id[0] || p.restarts) return;   /* restarting patches are not run from here */
+    if (!p.id[0]) return;
     char file[300], log[300], state[24] = "error", reason[100] = "";
     int sup = 0;
     snprintf(file, sizeof file, WORK "/patch-%s.sh", p.id);
@@ -1263,6 +1407,8 @@ static void do_papply(mgr_t *m) {
         say(m, ERR, "%s: %s. Nothing was changed.", p.title, why);
         return;
     }
+    if (!undo && companions_first(m, &p)) { unlink(file); return; }
+    if (p.restarts) { papply_detached(m, &p, undo, file, log); return; }
     say(m, OK, "%s \"%s\"\xe2\x80\xa6", undo ? "Removing" : "Applying", p.title);
     int rc = patch_run(file, undo ? "uninstall" : "install", "--confirmed", 180, WORK "/patch-out.txt");
     char *out = slurp(WORK "/patch-out.txt", 16384);
@@ -2432,6 +2578,7 @@ static void do_refresh(mgr_t *m) {
         say_locked(m, WARN, "MPC OS 3.10.1 lists only plugins in VST2 Plugins: APPLY copies your %d installed plugin%s there (MPC restarts)",
                    m->dev->nmove, m->dev->nmove == 1 ? "" : "s");
     show_result(m, m->pkg, m->npkg);
+    show_patch_result(m);
     int cp = cache_used_pct();
     if (cp >= 85 && !m->dev->problem[0] && m->status_kind != ERR)
         say_locked(m, WARN, "MPC's image cache is %d%% full: restart the MPC (or reboot) before parts of this screen draw black", cp);
@@ -2730,21 +2877,38 @@ static void do_prepare(mgr_t *m) {
     free(q);
 }
 
+/* Start `sh script` outside MPC (acvs.service), so it survives MPC being stopped. 0 when started. Host builds never run it (a dry run),
+ * except FS_ANY tests with PM_DETACHED_RUN set, which run it in the foreground. */
+static int launch_detached(mgr_t *m, const char *script) {
+#if defined(__arm__) || defined(__aarch64__)
+    if (m->dev->systemd_run) {
+        char unit[64], path[300];
+        snprintf(unit, sizeof unit, "--unit=openmpcpm-apply-%ld", (long)time(NULL));
+        snprintf(path, sizeof path, "%s", script);
+        char *argv[] = {"systemd-run", unit, "--collect", "/bin/sh", path, NULL};
+        return run(argv) ? -1 : 0;
+    }
+    /* untested fallback: leave acvs.service's cgroup by hand (cgroup v2 root) so stopping MPC doesn't kill us */
+    char cmd[400];
+    snprintf(cmd, sizeof cmd, "echo $$ > /sys/fs/cgroup/cgroup.procs && (setsid /bin/sh '%s' </dev/null >/dev/null 2>&1 &)", script);
+    return sh(cmd) ? -1 : 0;
+#else
+    (void)m;
+#ifdef FS_ANY
+    if (getenv("PM_DETACHED_RUN")) { char cmd[400]; snprintf(cmd, sizeof cmd, "sh '%s'", script); return sh(cmd) ? -1 : 0; }
+#endif
+    logf_("dry run: %s written, not run", script);   /* host tests: never touch the build machine */
+    return 0;
+#endif
+}
+
 static void do_launch(mgr_t *m) {
     say(m, OK, "Restarting MPC\xe2\x80\xa6 it will be back in a few seconds");
     logf_("launching apply.sh");
 #if defined(__arm__) || defined(__aarch64__)
-    if (m->dev->systemd_run) {
-        char unit[64];
-        snprintf(unit, sizeof unit, "--unit=openmpcpm-apply-%ld", (long)time(NULL));
-        char *argv[] = {"systemd-run", unit, "--collect", "/bin/sh", WORK "/apply.sh", NULL};
-        if (run(argv)) say(m, ERR, "MPC could not be restarted (systemd-run failed). Nothing was changed.");
-    } else {
-        /* untested fallback: leave acvs.service's cgroup by hand (cgroup v2 root) so stopping MPC doesn't kill us */
-        if (sh("echo $$ > /sys/fs/cgroup/cgroup.procs && (setsid /bin/sh " WORK "/apply.sh </dev/null >/dev/null 2>&1 &)"))
-            say(m, ERR, "MPC could not be restarted. Nothing was changed.");
-    }
+    if (launch_detached(m, WORK "/apply.sh")) say(m, ERR, "MPC could not be restarted. Nothing was changed.");
 #else
+    (void)launch_detached;
     say(m, OK, "Dry run: apply.sh written");   /* host tests: never touch the build machine */
 #endif
 }
@@ -3324,13 +3488,28 @@ static void mgr_set_param(void *inst, const char *key, const char *val) {
         if (kind) {
             long long now = mono_ms();
             int want = 1 + pi * 2 + (kind == 2);
-            if (m->ptweb == want || (m->ptconf == want && now - m->ptconf_t < 6000)) {   /* the second tap, within 6 s; or the one tap that confirms what the web page asked for */
+            if (m->ptweb == want || (m->ptconf == want && now - m->ptconf_t < pt_tapwin(&m->pt[pi]))) {   /* the second tap in time; or the one tap that confirms what the web page asked for */
                 m->ptconf = m->ptweb = 0;
                 m->ptidx = pi;
                 m->ptact = kind;
                 say_locked(m, OK, "%s \"%s\"\xe2\x80\xa6", kind == 2 ? "Removing" : "Applying", m->pt[pi].title);
                 post(m, J_PAPPLY);
-            } else { m->ptconf = want; m->ptconf_t = now; }   /* the first tap: the button asks again */
+            } else {   /* the first tap: the button asks again, and the status line says what the second one does */
+                m->ptconf = want; m->ptconf_t = now;
+                const patch_t *p = &m->pt[pi];
+                char also[110] = "";   /* the status line holds 160 characters: titles are cut at their first colon */
+                int ci[4], nc = kind == 1 ? pt_companions(m, p, ci) : 0;
+                for (int i = 0; i < nc; i++) {
+                    size_t k = strlen(also);
+                    const char *t = m->pt[ci[i]].title;
+                    snprintf(also + k, sizeof also - k, "%s\"%.*s\"", i ? ", " : " Also installs ", (int)(strcspn(t, ":") < 40 ? strcspn(t, ":") : 40), t);
+                }
+                if (nc > 0) strncat(also, " (keeps it after a reboot).", sizeof also - strlen(also) - 1);
+                const char *w = kind == 2 ? "UNDO" : "APPLY";
+                if (p->restarts) say_locked(m, WARN, "%s restarts MPC: save your project first.%s Tap %s again.", w, also, w);
+                else say_locked(m, WARN, "%s of \"%.40s\" changes %.50s%s.%s Tap %s again.", w, p->title, p->modifies[0] ? p->modifies : "?",
+                                p->reversible ? "" : " and cannot be undone", also, w);
+            }
         }
     } else if (!strcmp(key, "pat_prev") && m->ptpage > 0) { m->ptpage--; m->ptconf = 0; }
     else if (!strcmp(key, "pat_next") && (m->ptpage + 1) * 3 < m->npt) { m->ptpage++; m->ptconf = 0; }
@@ -3446,17 +3625,19 @@ static int mgr_get_param(void *inst, const char *key, char *b, int n) {
         else if (!strcmp(f, "for")) {
             if (!p) snprintf(b, n, " ");
             else if (!pt_arch_ok(m, p)) snprintf(b, n, "Not for this device: built for %s, this MPC is %s", p->arch, m->dev->arch);
-            else if (p->checked) snprintf(b, n, "Checked on this MPC: %s%s%s%s", p->state, p->reason[0] ? "  \xc2\xb7  " : "", p->reason,
-                                          p->restarts && (p->supported || !strcmp(p->state, "patched")) ? "  \xc2\xb7  restarts MPC: use the installer app" : "");
+            else if (p->checked && p->restarts && (p->supported || !strcmp(p->state, "patched")))   /* the warning first: a long reason would push it off the row */
+                snprintf(b, n, "%s restarts MPC: save your project first.  \xc2\xb7  %s%s%s", strcmp(p->state, "patched") ? "APPLY" : "UNDO", p->state,
+                         p->reason[0] ? "  \xc2\xb7  " : "", p->reason);
+            else if (p->checked) snprintf(b, n, "Checked on this MPC: %s%s%s", p->state, p->reason[0] ? "  \xc2\xb7  " : "", p->reason);
             else snprintf(b, n, "For: %.108s", p->os);
         }
         else if (!strcmp(f, "pill"))   /* none, not checked, stock (can apply), applied, not supported, other device, check failed */
             snprintf(b, n, "%d", !p ? 0 : !pt_arch_ok(m, p) ? 5 : !p->checked ? 1 : !strcmp(p->state, "error") ? 6
-                                  : p->supported && !strcmp(p->state, "stock") ? 2 : !strcmp(p->state, "patched") ? 3 : 4);
+                                  : p->supported && (!strcmp(p->state, "stock") || !strcmp(p->state, "old-patch")) ? 2 : !strcmp(p->state, "patched") ? 3 : 4);
         else if (!strcmp(f, "canact")) {   /* off, apply, undo, confirm apply, confirm undo */
             int kind = pt_act_kind(m, p);
             int want = 1 + pi * 2 + (kind == 2);
-            snprintf(b, n, "%d", !kind ? 0 : m->ptweb == want || (m->ptconf == want && mono_ms() - m->ptconf_t < 6000) ? 2 + kind : kind);
+            snprintf(b, n, "%d", !kind ? 0 : m->ptweb == want || (m->ptconf == want && mono_ms() - m->ptconf_t < pt_tapwin(p)) ? 2 + kind : kind);
         }
         else if (!strcmp(f, "canchk")) snprintf(b, n, "%d", p && pt_arch_ok(m, p) ? 1 + p->checked : 0);   /* off, check, check again */
         else ok = 0;
@@ -3464,8 +3645,9 @@ static int mgr_get_param(void *inst, const char *key, char *b, int n) {
     else if (!strcmp(key, "pat_pages")) snprintf(b, n, "%d", m->npt > 3);
     else if (!strcmp(key, "pat_page")) snprintf(b, n, "%d / %d", m->ptpage + 1, m->npt ? (m->npt + 2) / 3 : 1);
     else if (!strcmp(key, "pat_foot") && m->ptweb > 0 && (m->ptweb - 1) / 2 < m->npt)
-        snprintf(b, n, "The web page asks to %s \"%s\": find its card and tap %s once to confirm.", (m->ptweb - 1) % 2 ? "UNDO" : "APPLY",
-                 m->pt[(m->ptweb - 1) / 2].title, (m->ptweb - 1) % 2 ? "UNDO" : "APPLY");
+        snprintf(b, n, "The web page asks to %s \"%s\": find its card and tap %s once to confirm.%s", (m->ptweb - 1) % 2 ? "UNDO" : "APPLY",
+                 m->pt[(m->ptweb - 1) / 2].title, (m->ptweb - 1) % 2 ? "UNDO" : "APPLY",
+                 m->pt[(m->ptweb - 1) / 2].restarts ? " MPC restarts: save your project first." : "");
     else if (!strcmp(key, "pat_foot")) snprintf(b, n, m->npt ? "%d device patches. CHECK runs a patch's status on this MPC and changes nothing." : "No patch list yet (needs the network).", m->npt);
     else if (!strcmp(key, "about_ver")) snprintf(b, n, "Plugin Manager %s", PM_VERSION);
     else if (!strcmp(key, "about_inst")) {   /* the manifest of the copy on disk, which can differ from the running build */

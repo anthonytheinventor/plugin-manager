@@ -24,20 +24,27 @@ for d in "$here"/build/skin/*/; do
     echo "themes in $d: $(du -sh "$d/Plugin Skins.dark" | cut -f1) dark, $(du -sh "$d/Plugin Skins.light" | cut -f1) light"
 done
 
-# Background-server payload (Gen2 only): ship the daemon binary + the SIGNED device script inside
-# each plugin folder under bgserver/, so the SETTINGS "Background server" toggle can install it on
-# the device with no SSH. aarch64 only; requires `daemon/install.sh build` + `daemon/install.sh sign`
-# to have produced and signed the artifacts first.
-if [ "$arch" = aarch64 ]; then
-    bin="$here/build/daemon/openmpc-pm-daemon"
+# Background-server payload (Gen2 only): the daemon binary + the launcher .so + the SIGNED device script, in vst/build/bgserver-aarch64/.
+# A local aarch64 build also copies it into each plugin folder (bgserver/), so the SETTINGS "Background server" toggle can install it; a
+# release (arch "all") does not: the skin folder is shared by the armv7 and aarch64 zips, so the release workflow adds the folder to the
+# aarch64 zip only (extra_aarch64 in plugin-manager.yml). The .ini's checksum covers the .lua only (daemon/README.md), is committed, and
+# needs no re-signing when the binaries are rebuilt. Without a checksum the payload is skipped (the SETTINGS toggle says "Gen2 only").
+if [ "$arch" = aarch64 ] || [ "$arch" = all ]; then
     ds="$here/../daemon/device-script"
-    if [ -x "$bin" ] && grep -q '^checksum=[0-9a-f]\{64\}$' "$ds/openmpc_pm_launch.ini" 2>/dev/null; then
-        for d in "$here"/build/skin/*/; do
-            mkdir -p "$d/bgserver"
-            cp "$bin" "$ds/openmpc_pm_launch.so" "$ds/openmpc_pm_launch.lua" "$ds/openmpc_pm_launch.ini" "$d/bgserver/"
-            echo "bgserver payload in $d: $(ls "$d/bgserver" | tr '\n' ' ')"
-        done
+    bgout="$here/build/bgserver-aarch64"
+    if grep -q '^checksum=[0-9a-f]\{64\}$' "$ds/openmpc_pm_launch.ini" 2>/dev/null; then
+        "$here/build_daemon.sh" aarch64
+        U="$(id -u):$(id -g)"
+        docker run --rm --platform linux/arm64 -u "$U" -v "$here/..":/b -w /b arm64v8/gcc:12-bookworm bash -euc '
+            gcc -shared -fPIC -O2 -Wall -o daemon/device-script/openmpc_pm_launch.so daemon/device-script/openmpc_pm_launch.c
+            strip daemon/device-script/openmpc_pm_launch.so'
+        rm -rf "$bgout"; mkdir -p "$bgout"
+        cp "$here/build/daemon/openmpc-pm-daemon" "$ds/openmpc_pm_launch.so" "$ds/openmpc_pm_launch.lua" "$ds/openmpc_pm_launch.ini" "$bgout/"
+        echo "bgserver payload in $bgout: $(ls "$bgout" | tr '\n' ' ')"
+        if [ "$arch" = aarch64 ]; then
+            for d in "$here"/build/skin/*/; do rm -rf "$d/bgserver"; cp -r "$bgout" "$d/bgserver"; done
+        fi
     else
-        echo "NOTE: no signed bgserver payload (run: daemon/install.sh build && daemon/install.sh sign) — SETTINGS toggle will show 'Gen2 only'"
+        echo "NOTE: the device script is not signed (no checksum in daemon/device-script/openmpc_pm_launch.ini): no bgserver payload"
     fi
 fi

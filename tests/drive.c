@@ -323,6 +323,11 @@ int main(int argc, char **argv) {
     printf("restarting: |%s| pill=%s act=%s\n", get("pat1_title"), get("pat1_pill"), get("pat1_canact"));
     e->destroy(m); return 0;
   }
+  if (argc > 1 && !strcmp(argv[1], "bgheal")) {   /* the always-on daemon is older than the one this plugin ships: the manager's refresh reinstalls it */
+    for (int i = 0; i < 50 && access("/tmp/bg-calls", F_OK); i++) usleep(200000);
+    usleep(500000);
+    e->destroy(m); return 0;
+  }
   if (argc > 1 && !strcmp(argv[1], "models")) {   /* entries for other devices are hidden when the model is known */
     set("kind", "3");   /* addins */
     int seen = 0;

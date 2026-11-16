@@ -74,7 +74,7 @@ typedef struct {
 #endif
 /* The version of this build, shown on the ABOUT page. The release workflow fails when its version input differs from this. */
 #ifndef PM_VERSION
-#define PM_VERSION "1.3.0"
+#define PM_VERSION "1.3.1"
 #endif
 #define WORK "/tmp/openmpc-pm"
 #define MAXPKG 256
@@ -1482,16 +1482,27 @@ static int retire_old_self(mgr_t *m) {
     int listed_counts[16], nd = 0, removed = 0;
     for (int k = 0; k < d->nvdrv && nd < 16; k++) { listed_counts[nd] = d->vst2 != 2; dirs[nd++] = d->vdrv[k]; }
     for (int k = 0; k < d->nusable && nd < 16; k++) { listed_counts[nd] = 1; dirs[nd++] = d->usable[k]; }
+    /* a second copy of the current Manager is removed only by a copy that itself runs from a VST2 Plugins folder (3.10.1), so an old copy
+     * still loaded from a Synths folder never removes the newer one an update put in VST2 Plugins */
+    int own_in_vst2 = 0;
+    for (int k = 0; d->vst2 == 2 && k < d->nvdrv; k++) {
+        char od[300];
+        snprintf(od, sizeof od, "%.*s", (int)(b - m->own), m->own);
+        if (same_folder(od, d->vdrv[k])) own_in_vst2 = 1;
+    }
     for (int i = 0; i < nd; i++) {
+      for (int which = 0; which < 2; which++) {   /* the pre-1.1 name, then this copy's own name (a second copy of the current Manager) */
         char old[320], id[64];
-        if (snprintf(old, sizeof old, "%s/%s", dirs[i], RETIRED_SELF) >= (int)sizeof old || !is_dir(old) || !strcmp(old, m->own)) continue;
+        if (which && !(own_in_vst2 && d->vst2 == 2 && !listed_counts[i])) continue;   /* duplicates: only in 3.10.1's VST2 Plugins, where every copy loads */
+        if (snprintf(old, sizeof old, "%s/%s", dirs[i], which ? b + 1 : RETIRED_SELF) >= (int)sizeof old || !is_dir(old) || same_folder(old, m->own)) continue;
         manifest_str(old, "id", id, sizeof id);
         if (strcmp(id, "plugin-manager-g2")) { logf_("left %s alone: its id is \"%s\"", old, id); continue; }
         if (listed_counts[i] && st && strstr(st, old)) { logf_("left %s alone: MPC.settings lists it", old); continue; }
         if (!safe(old)) continue;
         char *argv[] = {"rm", "-rf", "--", old, NULL};
-        if (run(argv) == 0 && !is_dir(old)) { logf_("removed the old Plugin Manager folder %s (renamed in 1.1.0)", old); removed++; }
+        if (run(argv) == 0 && !is_dir(old)) { logf_(which ? "removed a second copy of the Plugin Manager %s" : "removed the old Plugin Manager folder %s (renamed in 1.1.0)", old); removed++; }
         else logf_("could not remove the old Plugin Manager folder %s", old);
+      }
     }
     free(st);
     return removed;
@@ -1764,6 +1775,16 @@ static void target_save(const mgr_t *m) {   /* tmp, then rename */
     fprintf(fp, "%s\n", dest(m));
     fclose(fp);
     rename(t, f);
+}
+
+/* 3.10.1 (VST2 Support on): where an install or update goes. An update stays on the drive the plugin is already on ("<that drive>/VST2
+ * Plugins"); only a new install goes to the picked location. Before 1.3.1 an update went to the picked location too, so updating a plugin on
+ * the SD card while internal storage was picked left the SD copy in place and added a second one on internal (danjohnny5, 2026-11-16: three
+ * Plugin Managers after updating it). */
+static int loc_target_index(const mgr_t *m, const char *path);
+static const char *vst2_target(const mgr_t *m, const pkg_t *p) {
+    int k = p->synths[0] ? loc_target_index(m, p->synths) : -1;
+    return k >= 0 ? target_at(m, k) : dest(m);
 }
 
 /* Can this folder hold a symbolic link? FAT, exFAT and NTFS cannot (Gen2's internal /nvme is exFAT). Asked of a package that needs
@@ -2812,7 +2833,7 @@ static void prepare(mgr_t *m, pkg_t *q) {
             if (is_addin(p) && p->queued == Q_REMOVE) snprintf(target, sizeof target, "%s", p->synths);
             else if (is_addin(p)) snprintf(target, sizeof target, "%s/%s", m->dev->addins, p->id);
             else snprintf(target, sizeof target, "%s", p->queued == Q_REMOVE ? p->synths
-                          : m->dev->vst2 == 2 ? dest(m)   /* 3.10.1: installs and updates go to VST2 Plugins (install.sh keeps user files on an update) */
+                          : m->dev->vst2 == 2 ? vst2_target(m, p)   /* 3.10.1: VST2 Plugins; an update on the drive it is already on (install.sh keeps user files) */
                           : p->synths[0] && good_target(p->synths) ? p->synths : dest(m));
             if (m->dev->vst2 != 2 && !is_addin(p) && p->queued == Q_INSTALL && !p->synths[0]) {   /* (3.10.1: the move to VST2 Plugins runs first) */
                 /* installed before by something that left no mpc-plugin.json (older installers): the catalog name and the entry's name differ,

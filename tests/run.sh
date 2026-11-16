@@ -294,6 +294,22 @@ PM_DETACHED_RUN=1 /tmp/drive_addins pcompfail > /tmp/pcompfail.out
 grep -qF "failed: |Fixture restarting needs \"Fixture companion: keeps it\", and installing it did not finish" /tmp/pcompfail.out && grep -qF "result=0 runner=0 marker=0" /tmp/pcompfail.out || { cat /tmp/pcompfail.out; exit 1; }
 rm -f /tmp/fx-comp-fail /tmp/fx-comp-marker
 [ ! -e /tmp/fx-patch-marker ] && [ ! -e /tmp/openmpc-pm/patch-result ] || { echo "the marker or the result file is still there"; exit 1; }
+# the background server (daemon) is replaced when the plugin ships a different one; left alone when it is the same; MPC is never restarted by it
+rm -rf /media /sdcard /nvme /synths /data /tmp/openmpc-pm /tmp/pm-mounts /tmp/bgown /tmp/bg-calls /tmp/bgstub; mkdir -p /media
+sh tests/devices/two-targets.sh
+mkdir -p /data/openmpc-pm /tmp/bgown/bgserver "/nvme/MPC Documents/Devices/OpenMPC PM Server" /tmp/bgstub
+echo old-daemon > /data/openmpc-pm/openmpc-pm-daemon; echo new-daemon > /tmp/bgown/bgserver/openmpc-pm-daemon
+for f in openmpc_pm_launch.so openmpc_pm_launch.lua openmpc_pm_launch.ini; do echo x > /tmp/bgown/bgserver/$f; done
+echo x > "/nvme/MPC Documents/Devices/OpenMPC PM Server/openmpc_pm_launch.so"
+# the manager runs its commands with its own PATH (/usr/sbin first), so the stubs go there, and the real ones come back after
+for c in systemctl systemd-run pgrep; do [ -e /usr/sbin/$c ] && mv /usr/sbin/$c /tmp/bgstub/$c.orig; printf "#!/bin/sh\necho %s \"\$*\" >> /tmp/bg-calls\nexit 0\n" $c > /usr/sbin/$c; chmod +x /usr/sbin/$c; done
+PM_OWN=/tmp/bgown /tmp/drive_addins bgheal > /tmp/bgheal.out
+grep -qx "new-daemon" /data/openmpc-pm/openmpc-pm-daemon && grep -q "^systemd-run --unit=openmpc-pm-daemon" /tmp/bg-calls || { echo "the daemon was not replaced and restarted"; cat /tmp/bg-calls /tmp/openmpc-pm/manager.log /tmp/bgheal.out; exit 1; }
+! grep -q "acvs" /tmp/bg-calls || { echo "the daemon refresh touched MPC (acvs)"; cat /tmp/bg-calls; exit 1; }
+rm -f /tmp/bg-calls; : > /tmp/bg-calls   # the same daemon again: nothing is run
+PM_OWN=/tmp/bgown /tmp/drive_addins bgheal > /tmp/bgheal.out
+! grep -q "systemd-run" /tmp/bg-calls || { echo "an up-to-date daemon was restarted"; cat /tmp/bg-calls; exit 1; }
+for c in systemctl systemd-run pgrep; do rm -f /usr/sbin/$c; [ -e /tmp/bgstub/$c.orig ] && mv /tmp/bgstub/$c.orig /usr/sbin/$c; done
 # per-device catalog entries: shown when the model is unknown or listed, hidden on another MPC
 rm -rf /media /sdcard /nvme /synths /data /tmp/openmpc-pm /tmp/pm-mounts; mkdir -p /media
 sh tests/devices/two-targets.sh

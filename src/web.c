@@ -62,7 +62,7 @@ static void web_state(mgr_t *m, wbuf_t *w) {
     char st[200];   /* what the screen's status line shows (mgr_get_param "status", without the search hints) */
     if (m->sticky) snprintf(st, sizeof st, "%s", m->status);
     else queue_text(m, st, sizeof st);
-    wput(w, "{\"status\":\"");
+    wput(w, "{\"version\":\"%s\",\"status\":\"", PM_VERSION);
     wesc(w, st, 0);
     wput(w, "\",\"status_kind\":%d,\"online\":%d,\"loaded\":%d,\"busy\":%d,\"ready\":%d,\"failed\":%d,\"queued\":%d,"
             "\"vst2\":%d,\"move\":%d,\"migrate\":%d,\"problem\":\"", m->sticky ? m->status_kind : OK, m->online, m->loaded, m->busy, m->ready, m->failed,

@@ -1648,6 +1648,26 @@ static int bg_install(mgr_t *m) {   /* 0 ok */
     return sh(cmd);
 }
 
+/* A plugin update does not touch the daemon that serves the web page (a separate binary in /data/openmpc-pm, running since boot): the old one
+ * kept serving the old page (device, 2026-11-16: no APPLY offered for a restarting patch). When the background server is on and this plugin
+ * ships a daemon that differs from the installed one, install it again: copy, restart the daemon only, never MPC. Once per process. */
+static int bg_stale(const mgr_t *m) {
+    char src[340]; bg_src(m, src, sizeof src);
+    if (!src[0] || !m->bg_on) return 0;
+    char cmd[800];
+    snprintf(cmd, sizeof cmd, "[ -f '%s/openmpc-pm-daemon' ] && ! cmp -s '%s/openmpc-pm-daemon' '%s'", src, src, BG_BIN);
+    return sh(cmd) == 0;
+}
+
+static void bg_heal(mgr_t *m) {
+    static int tried;
+    if (tried || !bg_stale(m)) return;
+    tried = 1;
+    int rc = bg_install(m);
+    logf_("background server: the installed daemon differs from this plugin's: reinstalled (exit %d)", rc);
+    bg_refresh(m);
+}
+
 static int bg_uninstall(mgr_t *m) {
     char root[200]; bg_content_root(root, sizeof root);
     char cmd[1200];
@@ -2534,6 +2554,7 @@ static void do_refresh(mgr_t *m) {
     m->show_beta = cfg_get(m->dev->base, "beta", 1);
     m->web_pref = cfg_get(m->dev->base, "web", 1);
     bg_refresh(m);   /* SETTINGS: the always-on background server's installed/running state */
+    bg_heal(m);
     if (!m->confirm) target_init(m);   /* a pick still open on the prompt is kept */
     write_report(m->dev);
     loc_build(m);

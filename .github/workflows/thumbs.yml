@@ -19,8 +19,13 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install pillow
+      # vst/shots.py reads the catalog entries (catalog/plugins/*.json) of open-mpc/mpc-vst-plugins: its newest main, since the
+      # point is to find plugins added since the last build. Cloned outside the workspace, so thumbs_check.sh's "git add -A" cannot pick it up.
+      - name: The live catalog
+        run: git clone -q --depth 1 https://github.com/open-mpc/mpc-vst-plugins.git "$RUNNER_TEMP/mpc-vst-plugins"
       - name: Regenerate the thumbnails; open a PR or an issue if there are new ones
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          MPC_VST: ${{ runner.temp }}/mpc-vst-plugins
         run: vst/thumbs_check.sh
